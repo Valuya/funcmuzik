@@ -18,16 +18,80 @@ public class MuzikResource {
     public static final int SAMPLE_SIZE_IN_BITS = 16;
     private static final int MAX_VOLUME = 32767;
 
+    // notes
+    private static final int C = 0;
+    private static final int D = 2;
+    private static final int E = 4;
+    private static final int F = 5;
+    private static final int G = 7;
+    private static final int A = 9;
+    private static final int B = 11;
+
+    private static final int BEMOL = -1;
+    private static final int SHARP = 1;
+
+    // intervals
+    private static final int FUNDAMENTAL = 0;
+    private static final int MINOR_THIRD = 3;
+    private static final int MAJOR_THIRD = 4;
+    private static final int FIFTH = 7;
+    private static final int SEVENTH = 10;
+    private static final int OCTAVE = 12;
+
+    // chord formulas
+    private static final int[] MINOR_CHORD = {FUNDAMENTAL, MINOR_THIRD, FIFTH};
+    private static final int[] MAJOR_CHORD = {FUNDAMENTAL, MAJOR_THIRD, FIFTH};
+    private static final int[] MAJOR7_CHORD = {FUNDAMENTAL, MAJOR_THIRD, FIFTH, SEVENTH};
+
+    private int[] chord(int fundamental, int[] chordFormula) {
+        return Arrays.stream(chordFormula)
+                .map(interval -> fundamental + interval)
+                .toArray();
+    }
+
     @GET
     public InputStream makeNoise() throws IOException, UnsupportedAudioFileException {
-        int[] notes = {0, 2, 4, 5, 7, 9, 11, 12};
+        int[] notes = {C, D, E, F, G, A, B, C + OCTAVE};
 
-        int noteDuration = 400;
+        int[][] chords = {
+                chord(A, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(E, MAJOR_CHORD),
+                chord(E, MAJOR_CHORD),
+                chord(E, MAJOR7_CHORD),
+                chord(E, MAJOR7_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(D, MAJOR_CHORD),
+                chord(D, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(E, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+                chord(A, MAJOR_CHORD),
+        };
+
+        int noteDuration = 1200;
+
         WaveGenerator waveGenerator = (frequency, time) -> getSinWaveValueIntWithFading(noteDuration, frequency, time);
-        int[][] waveData = Arrays.stream(notes)
-                .mapToDouble(note -> calcNoteFreq(note))
-                .mapToObj(frequency -> makeWave(frequency, noteDuration, waveGenerator))
-                .reduce(new int[2][0], (array1, array2) -> combineWaves(array1, array2));
+
+        int[][] chordsWaveData = Arrays.stream(chords)
+                .map(chordNotes -> Arrays.stream(chordNotes)
+                        .mapToDouble(note -> calcNoteFreq(note))
+                        .mapToObj(frequency -> makeWave(frequency, noteDuration, waveGenerator, .2))
+                        .reduce(this::mixWaves)
+                        .orElse(new int[2][0])
+                )
+                .reduce(this::combineWaves)
+                .orElse(new int[2][0]);
+
+        int[][] waveData = chordsWaveData;
+
+//        int[][] waveData = Arrays.stream(notes)
+//                .mapToDouble(note -> calcNoteFreq(note))
+//                .mapToObj(frequency -> makeWave(frequency, noteDuration, waveGenerator))
+//                .reduce(new int[2][0], (array1, array2) -> combineWaves(array1, array2));
 
 //        int[][] waveData = makeWave(220, SONG_LENGTH_MILLIS, (frequency, time) -> getSinWaveValueInt(frequency, time));
 //        int[][] waveData = makeWave(220, SONG_LENGTH_MILLIS, (frequency, time) -> getFmWaveValueInt(frequency, 0.01/, 10, time));
@@ -53,11 +117,33 @@ public class MuzikResource {
     }
 
     private int getSinWaveValueIntWithFading(int noteDuration, double frequency, int time) {
-        return (int) (getSinWaveValueInt(frequency, time) * getFadeInCoeff(200 , time) * getFadeOutCoeff(400 , noteDuration , time));
+        return (int) (getSinWaveValueInt(frequency, time) * getFadeInCoeff(200, time) * getFadeOutCoeff(400, noteDuration, time));
     }
 
     private double calcNoteFreq(int note) {
-        return 220.0 * Math.pow(2, (double) note / 12);
+        return 110.0 * Math.pow(2, (double) note / 12);
+    }
+
+    private int[][] mixWaves(int[][] waveData1, int[][] waveData2) {
+        int channelCount1 = waveData1.length;
+        int channelCount2 = waveData2.length;
+        if (channelCount1 != channelCount2) {
+            throw new IllegalArgumentException("Different channel sizes, cannot concatenate waves: " + channelCount1 + " != " + channelCount2);
+        }
+        if (channelCount1 == 0) {
+            return new int[0][0];
+        }
+
+        int length = waveData1[0].length;
+
+        int[][] mixWaveData = new int[CHANNELS][length];
+        for (int channelIndex = 0; channelIndex < channelCount1; channelIndex++) {
+            for (int time = 0; time < length; time++) {
+                mixWaveData[channelIndex][time] = waveData1[channelIndex][time] + waveData2[channelIndex][time];
+            }
+        }
+
+        return mixWaveData;
     }
 
     private int[][] combineWaves(int[][] waveData1, int[][] waveData2) {
@@ -121,23 +207,15 @@ public class MuzikResource {
         return waveBytes;
     }
 
-    private int[][] makeWave(double frequency, int lengthMillis, WaveGenerator waveGenerator) {
+    private int[][] makeWave(double frequency, int lengthMillis, WaveGenerator waveGenerator, double volume) {
         int sampleBufferSize = SAMPLE_RATE * lengthMillis / 1000;
 
         int[][] waveData = new int[CHANNELS][sampleBufferSize];
 
-        int fadeInDuration = SAMPLE_RATE * 50 / 1000;
-        int fadeOutDuration = SAMPLE_RATE * 200 / 1000;
-        int fadeOutStartTime = sampleBufferSize - fadeOutDuration;
-
         for (int sampleOffset = 0; sampleOffset < sampleBufferSize; sampleOffset++) {
             for (int channelIndex = 0; channelIndex < CHANNELS; channelIndex++) {
-//                double fadeInCoeff = sampleOffset < fadeInDuration ? 1.0 - (fadeInDuration - sampleOffset) / (double) fadeInDuration : 1.0;
-//                double fadeOutCoeff = sampleOffset < fadeOutStartTime ? 1.0 : 1.0 - (sampleOffset - fadeOutStartTime) / (double) fadeOutDuration;
-//                double fadeOutCoeff = 1.0;
-//                int sampleValue = (int) (fadeInCoeff * fadeOutCoeff * waveGenerator.getWaveValue(frequency, sampleOffset));
                 int sampleValue = waveGenerator.getWaveValue(frequency, sampleOffset);
-                waveData[channelIndex][sampleOffset] = sampleValue;
+                waveData[channelIndex][sampleOffset] = (int) (volume * sampleValue);
             }
         }
 
